@@ -1,3 +1,4 @@
+
 from html import escape
 
 from fastapi import APIRouter
@@ -52,7 +53,8 @@ def _page(title: str, body: str) -> str:
 
 
 @router.get("/date-features", response_class=HTMLResponse)
-def show_date_features_page():
+def show_date_features_page() -> HTMLResponse:
+    """Wyświetla stronę z opisem i przyciskiem tworzenia cech daty."""
     return HTMLResponse(
         _page(
             "Cechy daty",
@@ -70,7 +72,8 @@ def show_date_features_page():
 
 
 @router.post("/date-features", response_class=HTMLResponse)
-def run_date_features():
+def run_date_features() -> HTMLResponse:
+    """Uruchamia serwis cech daty i wyświetla wynik albo błąd."""
     try:
         result = date_features()
 

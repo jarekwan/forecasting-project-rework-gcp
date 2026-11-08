@@ -5,6 +5,7 @@ import io
 import json
 import os
 from abc import ABC, abstractmethod
+from typing import Any
 
 import pandas as pd
 from google.cloud import storage
@@ -17,15 +18,8 @@ OUTPUT_OBJECT = "data/processed/df_clean.pkl"
 ALLOWED_METHODS = {"drop", "zero", "ffill", "mean", "none"}
 
 
-
-
-
-# ---------------------------------------------------------------------
-# Interfejs i adapter Cloud Storage
-# ---------------------------------------------------------------------
-
 class ObjectStorage(ABC):
-    """Interfejs operacji na obiektach potrzebnych temu modułowi."""
+    """Kontrakt operacji Cloud Storage używanych przez moduł czyszczenia."""
 
     @abstractmethod
     def exists(self, object_name: str) -> bool:
@@ -59,9 +53,9 @@ class ObjectStorage(ABC):
 
 
 class GoogleCloudStorageAdapter(ObjectStorage):
-    """Udostępnia Cloud Storage przez interfejs ObjectStorage."""
+    """Dostosowuje bucket GCS do interfejsu ObjectStorage."""
 
-    def __init__(self, bucket):
+    def __init__(self, bucket: storage.Bucket) -> None:
         self._bucket = bucket
 
     def exists(self, object_name: str) -> bool:
@@ -97,13 +91,8 @@ class GoogleCloudStorageAdapter(ObjectStorage):
         )
 
 
-# ---------------------------------------------------------------------
-# Repozytorium
-# Odpowiada za odczyt i zapis DataFrame'ów oraz ustawień.
-# ---------------------------------------------------------------------
-
 class CleaningRepository(ABC):
-    """Interfejs dostępu do danych etapu czyszczenia."""
+    """Kontrakt odczytu i zapisu danych etapu czyszczenia."""
 
     @abstractmethod
     def read_dataframe(self, object_name: str) -> pd.DataFrame:
@@ -112,7 +101,7 @@ class CleaningRepository(ABC):
     @abstractmethod
     def save_dataframe(
         self,
-        df: pd.DataFrame,
+        dataframe: pd.DataFrame,
         object_name: str,
     ) -> str:
         raise NotImplementedError
@@ -132,9 +121,13 @@ class CleaningRepository(ABC):
 
 
 class GCSCleaningRepository(CleaningRepository):
-    """Odczytuje i zapisuje dane etapu czyszczenia w GCS."""
+    """Odczytuje i zapisuje DataFrame'y oraz ustawienia w GCS."""
 
-    def __init__(self, object_storage: ObjectStorage, bucket_name: str):
+    def __init__(
+        self,
+        object_storage: ObjectStorage,
+        bucket_name: str,
+    ) -> None:
         self._object_storage = object_storage
         self._bucket_name = bucket_name
 
@@ -154,18 +147,17 @@ class GCSCleaningRepository(CleaningRepository):
 
     def save_dataframe(
         self,
-        df: pd.DataFrame,
+        dataframe: pd.DataFrame,
         object_name: str,
     ) -> str:
         buffer = io.BytesIO()
-        df.to_pickle(buffer)
+        dataframe.to_pickle(buffer)
 
         self._object_storage.write_bytes(
             object_name,
             buffer.getvalue(),
             "application/octet-stream",
         )
-
         return f"gs://{self._bucket_name}/{object_name}"
 
     def read_methods(self) -> dict[str, str]:
@@ -183,57 +175,79 @@ class GCSCleaningRepository(CleaningRepository):
             json.dumps(methods, ensure_ascii=False),
             "text/plain; charset=utf-8",
         )
-
         return f"gs://{self._bucket_name}/{METHOD_OBJECT}"
 
 
-# ---------------------------------------------------------------------
-# Strategie uzupełniania braków
-# Każda metoda czyszczenia ma osobną klasę.
-# ---------------------------------------------------------------------
-
 class MissingValueStrategy(ABC):
-    """Wspólny interfejs dla metod obsługi brakujących wartości."""
+    """Kontrakt jednej metody obsługi brakujących wartości w kolumnie."""
 
     @abstractmethod
-    def apply(self, df: pd.DataFrame, column) -> pd.DataFrame:
+    def apply(
+        self,
+        dataframe: pd.DataFrame,
+        column: Any,
+    ) -> pd.DataFrame:
         raise NotImplementedError
 
 
 class DropMissingStrategy(MissingValueStrategy):
-    def apply(self, df: pd.DataFrame, column) -> pd.DataFrame:
-        return df.loc[df[column].notna()].copy()
+    def apply(
+        self,
+        dataframe: pd.DataFrame,
+        column: Any,
+    ) -> pd.DataFrame:
+        return dataframe.loc[dataframe[column].notna()].copy()
 
 
 class FillZeroStrategy(MissingValueStrategy):
-    def apply(self, df: pd.DataFrame, column) -> pd.DataFrame:
-        df[column] = df[column].fillna(0)
-        return df
+    def apply(
+        self,
+        dataframe: pd.DataFrame,
+        column: Any,
+    ) -> pd.DataFrame:
+        dataframe[column] = dataframe[column].fillna(0)
+        return dataframe
 
 
 class ForwardFillStrategy(MissingValueStrategy):
-    def apply(self, df: pd.DataFrame, column) -> pd.DataFrame:
-        df[column] = df[column].ffill()
-        return df
+    def apply(
+        self,
+        dataframe: pd.DataFrame,
+        column: Any,
+    ) -> pd.DataFrame:
+        dataframe[column] = dataframe[column].ffill()
+        return dataframe
 
 
 class MeanOrForwardFillStrategy(MissingValueStrategy):
-    def apply(self, df: pd.DataFrame, column) -> pd.DataFrame:
-        if pd.api.types.is_numeric_dtype(df[column]):
-            df[column] = df[column].fillna(df[column].mean())
-        else:
-            df[column] = df[column].ffill()
+    """Dla liczbowych używa średniej, dla pozostałych poprzedniej wartości."""
 
-        return df
+    def apply(
+        self,
+        dataframe: pd.DataFrame,
+        column: Any,
+    ) -> pd.DataFrame:
+        if pd.api.types.is_numeric_dtype(dataframe[column]):
+            dataframe[column] = dataframe[column].fillna(
+                dataframe[column].mean()
+            )
+        else:
+            dataframe[column] = dataframe[column].ffill()
+
+        return dataframe
 
 
 class KeepMissingStrategy(MissingValueStrategy):
-    def apply(self, df: pd.DataFrame, column) -> pd.DataFrame:
-        return df
+    def apply(
+        self,
+        dataframe: pd.DataFrame,
+        column: Any,
+    ) -> pd.DataFrame:
+        return dataframe
 
 
 def _create_strategies() -> dict[str, MissingValueStrategy]:
-    """Tworzy strategie odpowiadające dotychczasowym metodom."""
+    """Tworzy mapę nazw metod na ich wymienne strategie."""
     return {
         "drop": DropMissingStrategy(),
         "zero": FillZeroStrategy(),
@@ -243,115 +257,168 @@ def _create_strategies() -> dict[str, MissingValueStrategy]:
     }
 
 
-# ---------------------------------------------------------------------
-# Logika etapu czyszczenia
-# ---------------------------------------------------------------------
+def _build_cleaning_options(
+    dataframe: pd.DataFrame,
+) -> list[dict[str, str | int]]:
+    """Przygotowuje dla UI nazwę każdej kolumny i liczbę jej braków."""
+    return [
+        {
+            "column": str(column),
+            "missing": int(dataframe[column].isna().sum()),
+        }
+        for column in dataframe.columns
+    ]
+
+
+def _validate_cleaning_methods(
+    dataframe: pd.DataFrame,
+    methods: dict[str, str],
+    allowed_methods: set[str],
+) -> None:
+    """Sprawdza kompletność ustawień i poprawność nazw metod."""
+    dataframe_columns = {str(column) for column in dataframe.columns}
+    if set(methods) != dataframe_columns:
+        raise ValueError("Wybierz metodę dla każdej kolumny.")
+
+    invalid_methods = {
+        column: method
+        for column, method in methods.items()
+        if method not in allowed_methods
+    }
+    if invalid_methods:
+        raise ValueError(
+            f"Nieznane metody czyszczenia: {invalid_methods}"
+        )
+
+
+def _apply_cleaning_methods(
+    dataframe: pd.DataFrame,
+    methods: dict[str, str],
+    strategies: dict[str, MissingValueStrategy],
+) -> pd.DataFrame:
+    """Zastosowuje wybraną strategię do każdej wskazanej kolumny."""
+    column_names = {str(column): column for column in dataframe.columns}
+    result = dataframe.copy()
+
+    for column_name, method in methods.items():
+        if column_name not in column_names:
+            raise ValueError(f"Nie znaleziono kolumny: {column_name}")
+
+        strategy = strategies.get(method)
+        if strategy is None:
+            raise ValueError(f"Nieznana metoda: {method}")
+
+        result = strategy.apply(result, column_names[column_name])
+
+    return result
+
+
+def _build_cleaning_result(
+    dataframe: pd.DataFrame,
+    output_path: str,
+) -> dict[str, Any]:
+    """Buduje wynik z polami wykorzystywanymi przez clean_data_ui.py."""
+    return {
+        "dataframe_file": output_path,
+        "rows": len(dataframe),
+        "columns": [str(column) for column in dataframe.columns],
+        "preview_html": dataframe.head(10).to_html(
+            index=True,
+            escape=True,
+        ),
+    }
+
+
+def _print_cleaning_preview(dataframe: pd.DataFrame) -> None:
+    """Wypisuje próbkę wyczyszczonego DataFrame'u do logu."""
+    print("\nPRÓBKA df_clean.pkl ODCZYTANA Z BUCKETA:")
+    print(dataframe.head(10).to_string(index=False), flush=True)
+
 
 class CleanDataService:
-    """Koordynuje walidację ustawień i czyszczenie DataFrame'u."""
+    """Koordynuje operacje etapu czyszczenia danych."""
 
     def __init__(
         self,
         repository: CleaningRepository,
         strategies: dict[str, MissingValueStrategy],
-    ):
+    ) -> None:
         self._repository = repository
         self._strategies = strategies
 
-    def get_cleaning_options(self) -> list[dict]:
-        df = self._repository.read_dataframe(INPUT_OBJECT)
-
-        return [
-            {
-                "column": str(column),
-                "missing": int(df[column].isna().sum()),
-            }
-            for column in df.columns
-        ]
+    def get_cleaning_options(self) -> list[dict[str, str | int]]:
+        dataframe = self._repository.read_dataframe(INPUT_OBJECT)
+        return _build_cleaning_options(dataframe)
 
     def save_cleaning_methods(
         self,
         methods: dict[str, str],
     ) -> str:
-        df = self._repository.read_dataframe(INPUT_OBJECT)
-        columns = {str(column) for column in df.columns}
-
-        if set(methods) != columns:
-            raise ValueError("Wybierz metodę dla każdej kolumny.")
-
-        invalid = {
-            column: method
-            for column, method in methods.items()
-            if method not in self._strategies
-        }
-        if invalid:
-            raise ValueError(f"Nieznane metody czyszczenia: {invalid}")
-
+        dataframe = self._repository.read_dataframe(INPUT_OBJECT)
+        _validate_cleaning_methods(
+            dataframe,
+            methods,
+            set(self._strategies),
+        )
         return self._repository.save_methods(methods)
 
-    def clean_data(self) -> dict:
-        df = self._repository.read_dataframe(INPUT_OBJECT)
+    def clean_data(self) -> dict[str, Any]:
+        """Koordynuje odczyt, czyszczenie, zapis i wynik dla UI."""
+        dataframe = self._repository.read_dataframe(INPUT_OBJECT)
         methods = self._repository.read_methods()
-        column_names = {str(column): column for column in df.columns}
 
-        for column_name, method in methods.items():
-            if column_name not in column_names:
-                raise ValueError(f"Nie znaleziono kolumny: {column_name}")
+        cleaned_dataframe = _apply_cleaning_methods(
+            dataframe,
+            methods,
+            self._strategies,
+        )
+        output_path = self._repository.save_dataframe(
+            cleaned_dataframe,
+            OUTPUT_OBJECT,
+        )
+        saved_dataframe = self._repository.read_dataframe(OUTPUT_OBJECT)
 
-            strategy = self._strategies.get(method)
-            if strategy is None:
-                raise ValueError(f"Nieznana metoda: {method}")
+        _print_cleaning_preview(saved_dataframe)
+        return _build_cleaning_result(saved_dataframe, output_path)
 
-            column = column_names[column_name]
-            df = strategy.apply(df, column)
 
-        output_path = self._repository.save_dataframe(df, OUTPUT_OBJECT)
-        saved_df = self._repository.read_dataframe(OUTPUT_OBJECT)
+def _get_bucket() -> storage.Bucket:
+    """Zwraca bucket GCS wskazany przez GCS_BUCKET_NAME."""
+    bucket_name = os.environ.get("GCS_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("Brak zmiennej środowiskowej GCS_BUCKET_NAME.")
 
-        print("\nPRÓBKA df_clean.pkl ODCZYTANA Z BUCKETA:")
-        print(saved_df.head(10).to_string(index=False), flush=True)
+    return storage.Client().bucket(bucket_name)
 
-        return {
-            "dataframe_file": output_path,
-            "rows": len(saved_df),
-            "columns": [str(column) for column in saved_df.columns],
-            "preview_html": saved_df.head(10).to_html(
-                index=True,
-                escape=True,
-            ),
-        }
+
+def _create_repository() -> GCSCleaningRepository:
+    """Składa adapter GCS i repozytorium dla tego modułu."""
+    bucket = _get_bucket()
+    object_storage = GoogleCloudStorageAdapter(bucket)
+    return GCSCleaningRepository(
+        object_storage=object_storage,
+        bucket_name=bucket.name,
+    )
 
 
 def _create_service() -> CleanDataService:
-    bucket = _get_bucket()
-    bucket_name = bucket.name
-    object_storage = GoogleCloudStorageAdapter(bucket)
-
-    repository = GCSCleaningRepository(
-        object_storage=object_storage,
-        bucket_name=bucket_name,
-    )
-
+    """Tworzy usługę z repozytorium i dostępnymi strategiami."""
     return CleanDataService(
-        repository=repository,
+        repository=_create_repository(),
         strategies=_create_strategies(),
     )
 
 
-# ---------------------------------------------------------------------
-# Zachowane funkcje publiczne i pomocnicze
-# Inne moduły nadal mogą importować je pod dotychczasowymi nazwami.
-# ---------------------------------------------------------------------
-
+# Zachowane publiczne funkcje używane przez clean_data_ui.py.
 def _read_dataframe(object_name: str) -> pd.DataFrame:
-    return _create_service()._repository.read_dataframe(object_name)
+    return _create_repository().read_dataframe(object_name)
 
 
-def _save_dataframe(df: pd.DataFrame, object_name: str) -> str:
-    return _create_service()._repository.save_dataframe(df, object_name)
+def _save_dataframe(dataframe: pd.DataFrame, object_name: str) -> str:
+    return _create_repository().save_dataframe(dataframe, object_name)
 
 
-def get_cleaning_options() -> list[dict]:
+def get_cleaning_options() -> list[dict[str, str | int]]:
     return _create_service().get_cleaning_options()
 
 
@@ -359,5 +426,5 @@ def save_cleaning_methods(methods: dict[str, str]) -> str:
     return _create_service().save_cleaning_methods(methods)
 
 
-def clean_data() -> dict:
+def clean_data() -> dict[str, Any]:
     return _create_service().clean_data()

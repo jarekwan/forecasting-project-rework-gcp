@@ -1,9 +1,15 @@
+
+
+
 from html import escape
 
 from fastapi import APIRouter, Form
 from fastapi.responses import HTMLResponse
 
-from forecasting.services.features.lags.create_lags import create_lags, get_lag_source_preview
+from forecasting.services.features.lags.create_lags import (
+    create_lags,
+    get_lag_source_preview,
+)
 
 
 router = APIRouter()
@@ -41,16 +47,21 @@ def _page(title: str, body: str) -> str:
     """
 
 
+def _build_column_options(columns: list[str]) -> str:
+    """Buduje elementy option dla listy kolumn zwróconej przez serwis."""
+    return "".join(
+        f'<option value="{escape(str(column), quote=True)}">'
+        f"{escape(str(column))}</option>"
+        for column in columns
+    )
+
+
 @router.get("/create-lags", response_class=HTMLResponse)
 def show_create_lags_form():
+    """Pobiera podgląd danych i wyświetla formularz tworzenia lagów."""
     try:
         data = get_lag_source_preview()
-
-        options = "".join(
-            f'<option value="{escape(column, quote=True)}">'
-            f"{escape(column)}</option>"
-            for column in data["columns"]
-        )
+        options = _build_column_options(data["columns"])
 
         return _page(
             "Tworzenie cech lag",
@@ -87,6 +98,7 @@ def submit_create_lags(
     column: str = Form(...),
     lags_text: str = Form(...),
 ):
+    """Przekazuje dane formularza do serwisu i wyświetla wynik."""
     try:
         result = create_lags(column, lags_text)
 

@@ -1,170 +1,9 @@
-# import os
-# from pathlib import Path
-
-# import pandas as pd
-# import requests
-# from google.cloud import storage
-
-# PROJECT_DIR = Path(__file__).resolve().parent
-# DATA_DIR = PROJECT_DIR / "data"
-# UPLOAD_DIR = DATA_DIR / "uploads"
-# PROCESSED_DIR = DATA_DIR / "processed"
-# DATAFRAME_PATH = PROCESSED_DIR / "df.pkl"
-
-# GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
-# GCS_UPLOAD_PREFIX = "data/uploads"
-# GCS_PROCESSED_PREFIX = "data/processed"
-# GCS_DATAFRAME_BLOB = f"{GCS_PROCESSED_PREFIX}/df.pkl"
-
-
-# def get_gcs_bucket():
-#     """Zwraca bucket Cloud Storage ustawiony dla usługi."""
-#     if not GCS_BUCKET_NAME:
-#         raise RuntimeError(
-#             "Ustaw zmienną GCS_BUCKET_NAME w konfiguracji usługi Cloud Run."
-#         )
-
-#     return storage.Client().bucket(GCS_BUCKET_NAME)
-
-
-# def clear_saved_data() -> None:
-#     """Usuwa poprzednie pliki lokalne i kopie z Cloud Storage."""
-#     bucket = get_gcs_bucket()
-
-#     for prefix in (f"{GCS_UPLOAD_PREFIX}/", f"{GCS_PROCESSED_PREFIX}/"):
-#         for blob in bucket.list_blobs(prefix=prefix):
-#             blob.delete()
-
-#     for folder in (UPLOAD_DIR, PROCESSED_DIR):
-#         folder.mkdir(parents=True, exist_ok=True)
-
-#         for file_path in folder.iterdir():
-#             if file_path.is_file():
-#                 file_path.unlink()
-
-
-# def save_dataframe(df: pd.DataFrame) -> str:
-#     """Zapisuje DataFrame jako df.pkl lokalnie i w Cloud Storage."""
-#     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-#     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-#     # Zachowuje dotychczasowy zapis lokalny.
-#     df.to_pickle(DATAFRAME_PATH)
-
-#     bucket = get_gcs_bucket()
-
-#     # Kopiuje przesłany CSV do Cloud Storage.
-#     for file_path in UPLOAD_DIR.iterdir():
-#         if file_path.is_file():
-#             blob_name = f"{GCS_UPLOAD_PREFIX}/{file_path.name}"
-#             bucket.blob(blob_name).upload_from_filename(str(file_path))
-
-#     # Kopiuje df.pkl do Cloud Storage.
-#     bucket.blob(GCS_DATAFRAME_BLOB).upload_from_filename(
-#         str(DATAFRAME_PATH)
-#     )
-
-#     gcs_path = f"gs://{GCS_BUCKET_NAME}/{GCS_DATAFRAME_BLOB}"
-#     print(f"DataFrame zapisany w: {gcs_path}", flush=True)
-
-#     return gcs_path
-
-
-# def get_saved_dataframe_preview() -> dict:
-#     """Odczytuje df.pkl z Cloud Storage, wypisuje próbkę i zwraca ją do API."""
-#     bucket = get_gcs_bucket()
-#     blob = bucket.blob(GCS_DATAFRAME_BLOB)
-
-#     if not blob.exists():
-#         raise FileNotFoundError(
-#             f"Nie znaleziono pliku gs://{GCS_BUCKET_NAME}/{GCS_DATAFRAME_BLOB}"
-#         )
-
-#     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-#     blob.download_to_filename(str(DATAFRAME_PATH))
-
-#     df = pd.read_pickle(DATAFRAME_PATH)
-
-#     print("\nPRÓBKA DATAFRAME ODCZYTANA Z PICKLE:", flush=True)
-#     print(df.head(10).to_string(index=False), flush=True)
-
-#     return {
-#         "rows": len(df),
-#         "columns": list(df.columns),
-#         "preview": df.head(10).to_dict(orient="records"),
-#     }
-
-
-# def load_data(source_type: str, location: str) -> pd.DataFrame:
-#     if source_type == "csv":
-#         path = Path(location)
-#         if not path.exists():
-#             raise FileNotFoundError(f"Nie znaleziono pliku: {path}")
-
-#         # Tak samo jak w kodzie z GitHuba: domyślny separator przecinek.
-#         return pd.read_csv(path)
-
-#     if source_type == "json":
-#         path = Path(location)
-#         if not path.exists():
-#             raise FileNotFoundError(f"Nie znaleziono pliku: {path}")
-#         return pd.read_json(path)
-
-#     if source_type == "api":
-#         response = requests.get(location, timeout=30)
-#         response.raise_for_status()
-#         return pd.json_normalize(response.json())
-
-#     raise ValueError("Nieznany typ źródła.")
-
-
-# def choose_source() -> pd.DataFrame:
-#     while True:
-#         print("\nWYBIERZ ŹRÓDŁO DANYCH")
-#         print("1. CSV")
-#         print("2. JSON")
-#         print("3. API")
-
-#         choice = input("Wpisz 1, 2 albo 3: ").strip()
-
-#         if choice == "1":
-#             source_type = "csv"
-#             location = input("Podaj ścieżkę do pliku CSV: ").strip()
-#         elif choice == "2":
-#             source_type = "json"
-#             location = input("Podaj ścieżkę do pliku JSON: ").strip()
-#         elif choice == "3":
-#             source_type = "api"
-#             location = input("Wklej adres API: ").strip()
-#         else:
-#             print("Wybierz 1, 2 albo 3.")
-#             continue
-
-#         try:
-#             clear_saved_data()
-#             df = load_data(source_type, location)
-#             saved_path = save_dataframe(df)
-
-#             print("\nDANE WCZYTANE POPRAWNIE")
-#             print(df.head(10))
-#             print(f"\nDataFrame zapisany w: {saved_path}")
-
-#             return df
-
-#         except Exception as error:
-#             print(f"\nBŁĄD: {error}")
-
-
-# if __name__ == "__main__":
-#     selected_data = choose_source()
-
-
 
 
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Type
+from typing import Any, TypedDict
 
 import pandas as pd
 import requests
@@ -177,70 +16,66 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 PROCESSED_DIR = DATA_DIR / "processed"
 DATAFRAME_PATH = PROCESSED_DIR / "df.pkl"
 
-GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 GCS_UPLOAD_PREFIX = "data/uploads"
 GCS_PROCESSED_PREFIX = "data/processed"
 GCS_DATAFRAME_BLOB = f"{GCS_PROCESSED_PREFIX}/df.pkl"
 
 
-def _get_bucket_name() -> str:
-    """Pobiera nazwę bucketa i zgłasza błąd, jeśli jej nie ustawiono."""
-    bucket_name = os.environ.get("GCS_BUCKET_NAME", GCS_BUCKET_NAME)
+class DataFramePreview(TypedDict):
+    rows: int
+    columns: list[Any]
+    preview: list[dict[str, Any]]
 
+
+def _get_bucket_name() -> str:
+    """Zwraca nazwę bucketu z konfiguracji środowiska."""
+    bucket_name = os.environ.get("GCS_BUCKET_NAME")
     if not bucket_name:
         raise RuntimeError(
             "Ustaw zmienną GCS_BUCKET_NAME w konfiguracji usługi Cloud Run."
         )
-
     return bucket_name
 
 
-def get_gcs_bucket():
-    """Zwraca bucket Cloud Storage."""
+def get_gcs_bucket() -> storage.Bucket:
+    """Zwraca bucket Cloud Storage wskazany przez GCS_BUCKET_NAME."""
     return storage.Client().bucket(_get_bucket_name())
 
 
 # ---------------------------------------------------------------------
-# Strategie wczytywania danych
-# Każdy rodzaj źródła ma własną klasę realizującą ten sam interfejs.
+# Odczyt danych ze źródeł
 # ---------------------------------------------------------------------
 
 class DataSource(ABC):
-    """Wspólny interfejs dla źródeł danych."""
+    """Kontrakt źródła, które potrafi wczytać dane do DataFrame'u."""
 
     @abstractmethod
     def load(self, location: str) -> pd.DataFrame:
-        """Wczytuje dane i zwraca je jako DataFrame."""
         raise NotImplementedError
 
 
 class CsvDataSource(DataSource):
-    """Wczytuje dane z pliku CSV."""
+    """Wczytuje DataFrame z pliku CSV."""
 
     def load(self, location: str) -> pd.DataFrame:
         path = Path(location)
-
-        if not path.exists():
-            raise FileNotFoundError(f"Nie znaleziono pliku: {path}")
-
-        # Zachowuje dotychczasowy separator przecinek.
+        if not path.is_file():
+            raise FileNotFoundError(f"Nie znaleziono pliku CSV: {path}")
         return pd.read_csv(path)
 
 
 class JsonDataSource(DataSource):
-    """Wczytuje dane z pliku JSON."""
+    """Wczytuje DataFrame z pliku JSON."""
 
     def load(self, location: str) -> pd.DataFrame:
         path = Path(location)
-
-        if not path.exists():
-            raise FileNotFoundError(f"Nie znaleziono pliku: {path}")
-
+        if not path.is_file():
+            raise FileNotFoundError(f"Nie znaleziono pliku JSON: {path}")
         return pd.read_json(path)
 
 
 class ApiDataSource(DataSource):
-    """Pobiera dane z API."""
+    """Pobiera dane JSON z API i normalizuje je do DataFrame'u."""
 
     def load(self, location: str) -> pd.DataFrame:
         response = requests.get(location, timeout=30)
@@ -248,33 +83,49 @@ class ApiDataSource(DataSource):
         return pd.json_normalize(response.json())
 
 
+def _normalize_source_type(source_type: str) -> str:
+    """Normalizuje nazwę typu źródła do postaci używanej przez fabrykę."""
+    normalized = source_type.strip().lower()
+    if not normalized:
+        raise ValueError("Typ źródła nie może być pusty.")
+    return normalized
+
+
 class DataSourceFactory:
-    """
-    Tworzy strategię odpowiednią dla wybranego źródła.
+    """Tworzy obiekt strategii wczytywania dla wskazanego typu źródła."""
 
-    Nowy rodzaj źródła można dodać przez register(), bez dopisywania
-    kolejnej gałęzi if w funkcji load_data().
-    """
-
-    def __init__(self):
-        self._source_types: dict[str, Type[DataSource]] = {
+    def __init__(
+        self,
+        source_types: dict[str, type[DataSource]] | None = None,
+    ) -> None:
+        self._source_types: dict[str, type[DataSource]] = {
             "csv": CsvDataSource,
             "json": JsonDataSource,
             "api": ApiDataSource,
         }
 
+        if source_types:
+            for source_type, source_class in source_types.items():
+                self.register(source_type, source_class)
+
     def register(
         self,
         source_type: str,
-        source_class: Type[DataSource],
+        source_class: type[DataSource],
     ) -> None:
-        if not issubclass(source_class, DataSource):
+        """Rejestruje nowy typ źródła bez zmiany logiki serwisu."""
+        if not isinstance(source_class, type) or not issubclass(
+            source_class,
+            DataSource,
+        ):
             raise TypeError("Źródło musi dziedziczyć po DataSource.")
 
-        self._source_types[source_type.lower()] = source_class
+        self._source_types[_normalize_source_type(source_type)] = source_class
 
     def create(self, source_type: str) -> DataSource:
-        source_class = self._source_types.get(source_type.lower())
+        """Tworzy strategię dla typu źródła albo zgłasza błąd."""
+        normalized = _normalize_source_type(source_type)
+        source_class = self._source_types.get(normalized)
 
         if source_class is None:
             raise ValueError("Nieznany typ źródła.")
@@ -283,26 +134,22 @@ class DataSourceFactory:
 
 
 class DataIngestionService:
-    """Koordynuje wczytanie danych wybraną strategią."""
+    """Wczytuje dane, delegując konkretną pracę wybranej strategii."""
 
-    def __init__(self, source_factory: DataSourceFactory):
+    def __init__(self, source_factory: DataSourceFactory) -> None:
         self._source_factory = source_factory
 
-    def load(
-        self,
-        source_type: str,
-        location: str,
-    ) -> pd.DataFrame:
+    def load(self, source_type: str, location: str) -> pd.DataFrame:
         source = self._source_factory.create(source_type)
         return source.load(location)
 
 
 # ---------------------------------------------------------------------
-# Interfejs i adapter zapisu w Cloud Storage
+# Dostęp do Cloud Storage
 # ---------------------------------------------------------------------
 
 class ObjectStorage(ABC):
-    """Interfejs operacji na obiektach w magazynie danych."""
+    """Kontrakt operacji magazynu używanych przez repozytorium."""
 
     @property
     @abstractmethod
@@ -335,9 +182,9 @@ class ObjectStorage(ABC):
 
 
 class GoogleCloudStorageAdapter(ObjectStorage):
-    """Dostosowuje Cloud Storage do interfejsu ObjectStorage."""
+    """Realizuje kontrakt ObjectStorage za pomocą Google Cloud Storage."""
 
-    def __init__(self, bucket_name: str):
+    def __init__(self, bucket_name: str) -> None:
         self._bucket_name = bucket_name
         self._bucket = storage.Client().bucket(bucket_name)
 
@@ -369,12 +216,11 @@ class GoogleCloudStorageAdapter(ObjectStorage):
 
 
 # ---------------------------------------------------------------------
-# Repozytorium DataFrame'ów
-# Odpowiada za lokalny zapis oraz zapis i odczyt plików w GCS.
+# Repozytorium danych etapu wczytywania
 # ---------------------------------------------------------------------
 
 class DataFrameRepository:
-    """Zapisuje i odczytuje DataFrame'y oraz pliki etapu uploadu."""
+    """Zapisuje, odczytuje i usuwa dane etapu w plikach lokalnych oraz GCS."""
 
     def __init__(
         self,
@@ -382,56 +228,60 @@ class DataFrameRepository:
         dataframe_path: Path = DATAFRAME_PATH,
         upload_dir: Path = UPLOAD_DIR,
         processed_dir: Path = PROCESSED_DIR,
-    ):
+    ) -> None:
         self._object_storage = object_storage
         self._dataframe_path = dataframe_path
         self._upload_dir = upload_dir
         self._processed_dir = processed_dir
 
     def clear_saved_data(self) -> None:
-        """Usuwa poprzednie pliki uploadu i przetworzone dane."""
-        prefixes = (
-            f"{GCS_UPLOAD_PREFIX}/",
-            f"{GCS_PROCESSED_PREFIX}/",
-        )
-
-        for prefix in prefixes:
+        """Usuwa obiekty etapu uploadu/przetwarzania oraz pliki lokalne."""
+        for prefix in (f"{GCS_UPLOAD_PREFIX}/", f"{GCS_PROCESSED_PREFIX}/"):
             for object_name in self._object_storage.list_objects(prefix):
                 self._object_storage.delete_object(object_name)
 
-        for folder in (self._upload_dir, self._processed_dir):
-            folder.mkdir(parents=True, exist_ok=True)
+        self._clear_local_files(self._upload_dir)
+        self._clear_local_files(self._processed_dir)
 
-            for file_path in folder.iterdir():
-                if file_path.is_file():
-                    file_path.unlink()
+    @staticmethod
+    def _clear_local_files(folder: Path) -> None:
+        """Tworzy folder, jeśli go brakuje, i usuwa z niego zwykłe pliki."""
+        folder.mkdir(parents=True, exist_ok=True)
+        for file_path in folder.iterdir():
+            if file_path.is_file():
+                file_path.unlink()
 
-    def save_dataframe(self, df: pd.DataFrame) -> str:
-        """Zapisuje df.pkl lokalnie i kopiuje pliki etapu do GCS."""
-        self._processed_dir.mkdir(parents=True, exist_ok=True)
+    def save_dataframe(self, dataframe: pd.DataFrame) -> str:
+        """Zapisuje DataFrame i pliki uploadu lokalnie oraz w GCS."""
         self._upload_dir.mkdir(parents=True, exist_ok=True)
+        self._dataframe_path.parent.mkdir(parents=True, exist_ok=True)
+        self._processed_dir.mkdir(parents=True, exist_ok=True)
 
-        df.to_pickle(self._dataframe_path)
+        dataframe.to_pickle(self._dataframe_path)
+        self._upload_source_files()
+        self._upload_saved_dataframe()
 
+        return (
+            f"gs://{self._object_storage.bucket_name}/"
+            f"{GCS_DATAFRAME_BLOB}"
+        )
+
+    def _upload_source_files(self) -> None:
+        """Wysyła zachowane pliki źródłowe do prefiksu uploadu."""
         for file_path in self._upload_dir.iterdir():
             if file_path.is_file():
                 object_name = f"{GCS_UPLOAD_PREFIX}/{file_path.name}"
                 self._object_storage.upload_file(object_name, file_path)
 
+    def _upload_saved_dataframe(self) -> None:
+        """Wysyła zapisany lokalnie DataFrame do GCS."""
         self._object_storage.upload_file(
             GCS_DATAFRAME_BLOB,
             self._dataframe_path,
         )
 
-        gcs_path = (
-            f"gs://{self._object_storage.bucket_name}/{GCS_DATAFRAME_BLOB}"
-        )
-        print(f"DataFrame zapisany w: {gcs_path}", flush=True)
-
-        return gcs_path
-
-    def get_saved_dataframe_preview(self) -> dict:
-        """Odczytuje df.pkl z GCS i zwraca próbkę danych."""
+    def get_saved_dataframe_preview(self) -> DataFramePreview:
+        """Pobiera DataFrame z GCS i zwraca jego próbkę dla UI."""
         if not self._object_storage.exists(GCS_DATAFRAME_BLOB):
             raise FileNotFoundError(
                 "Nie znaleziono pliku "
@@ -439,88 +289,171 @@ class DataFrameRepository:
                 f"{GCS_DATAFRAME_BLOB}"
             )
 
-        self._processed_dir.mkdir(parents=True, exist_ok=True)
+        self._dataframe_path.parent.mkdir(parents=True, exist_ok=True)
         self._object_storage.download_to_file(
             GCS_DATAFRAME_BLOB,
             self._dataframe_path,
         )
 
-        df = pd.read_pickle(self._dataframe_path)
-
-        print("\nPRÓBKA DATAFRAME ODCZYTANA Z PICKLE:", flush=True)
-        print(df.head(10).to_string(index=False), flush=True)
-
+        dataframe = pd.read_pickle(self._dataframe_path)
         return {
-            "rows": len(df),
-            "columns": list(df.columns),
-            "preview": df.head(10).to_dict(orient="records"),
+            "rows": len(dataframe),
+            "columns": list(dataframe.columns),
+            "preview": dataframe.head(10).to_dict(orient="records"),
         }
 
 
+# ---------------------------------------------------------------------
+# Proces wczytania i zapisania danych
+# ---------------------------------------------------------------------
+
+class DataIngestionWorkflow:
+    """Koordynuje wczytanie nowego źródła i zapis wyniku."""
+
+    def __init__(
+        self,
+        ingestion_service: DataIngestionService,
+        repository: DataFrameRepository,
+    ) -> None:
+        self._ingestion_service = ingestion_service
+        self._repository = repository
+
+    def ingest(
+        self,
+        source_type: str,
+        location: str,
+    ) -> tuple[pd.DataFrame, str]:
+        """Wczytuje źródło, czyści poprzedni etap i zapisuje nowy DataFrame."""
+        dataframe = self._ingestion_service.load(source_type, location)
+        self._repository.clear_saved_data()
+        saved_path = self._repository.save_dataframe(dataframe)
+        return dataframe, saved_path
+
+
+# ---------------------------------------------------------------------
+# Funkcje zachowane dla obecnego UI i dotychczasowych wywołań
+# ---------------------------------------------------------------------
+
 def _create_dataframe_repository() -> DataFrameRepository:
-    """Tworzy repozytorium z adapterem Cloud Storage."""
+    """Składa adapter GCS i repozytorium w jednym miejscu."""
     object_storage = GoogleCloudStorageAdapter(_get_bucket_name())
     return DataFrameRepository(object_storage)
 
 
-# ---------------------------------------------------------------------
-# Zachowane funkcje publiczne używane przez app.py i inne moduły.
-# ---------------------------------------------------------------------
+def _create_ingestion_workflow() -> DataIngestionWorkflow:
+    """Tworzy domyślny proces wczytywania używany przez CLI."""
+    return DataIngestionWorkflow(
+        ingestion_service=DataIngestionService(DataSourceFactory()),
+        repository=_create_dataframe_repository(),
+    )
+
 
 def clear_saved_data() -> None:
+    """Zachowana funkcja używana przez upload UI."""
     _create_dataframe_repository().clear_saved_data()
 
 
-def save_dataframe(df: pd.DataFrame) -> str:
-    return _create_dataframe_repository().save_dataframe(df)
+def save_dataframe(dataframe: pd.DataFrame) -> str:
+    """Zachowana funkcja używana przez upload UI."""
+    return _create_dataframe_repository().save_dataframe(dataframe)
 
 
-def get_saved_dataframe_preview() -> dict:
+def get_saved_dataframe_preview() -> DataFramePreview:
+    """Zachowana funkcja używana przez wybór kolumn w UI."""
     return _create_dataframe_repository().get_saved_dataframe_preview()
 
 
-def load_data(source_type: str, location: str) -> pd.DataFrame:
-    """Zachowana funkcja używana przez aplikację."""
-    service = DataIngestionService(DataSourceFactory())
-    return service.load(source_type, location)
+def load_data(
+    source_type: str,
+    location: str,
+    source_factory: DataSourceFactory | None = None,
+) -> pd.DataFrame:
+    """Zachowana funkcja wczytywania z możliwością podania fabryki."""
+    factory = (
+        source_factory
+        if source_factory is not None
+        else DataSourceFactory()
+    )
+    return DataIngestionService(factory).load(source_type, location)
+
+
+# ---------------------------------------------------------------------
+# Interfejs terminalowy
+# ---------------------------------------------------------------------
+
+class ConsoleSourcePrompt:
+    """Obsługuje wyłącznie pytania i komunikaty w terminalu."""
+
+    _OPTIONS = {
+        "1": ("csv", "Podaj ścieżkę do pliku CSV: "),
+        "2": ("json", "Podaj ścieżkę do pliku JSON: "),
+        "3": ("api", "Wklej adres API: "),
+    }
+
+    def ask_for_source(self) -> tuple[str, str]:
+        while True:
+            print("\nWYBIERZ ŹRÓDŁO DANYCH")
+            print("1. CSV")
+            print("2. JSON")
+            print("3. API")
+
+            choice = input("Wpisz 1, 2 albo 3: ").strip()
+            option = self._OPTIONS.get(choice)
+
+            if option is None:
+                print("Wybierz 1, 2 albo 3.")
+                continue
+
+            source_type, location_prompt = option
+            location = input(location_prompt).strip()
+            return source_type, location
+
+    @staticmethod
+    def show_success(dataframe: pd.DataFrame, saved_path: str) -> None:
+        print("\nDANE WCZYTANE POPRAWNIE")
+        print(dataframe.head(10))
+        print(f"\nDataFrame zapisany w: {saved_path}")
+
+    @staticmethod
+    def show_error(error: Exception) -> None:
+        print(f"\nBŁĄD: {error}")
+
+
+class ConsoleIngestionController:
+    """Łączy wybór terminalowy z procesem wczytania danych."""
+
+    def __init__(
+        self,
+        prompt: ConsoleSourcePrompt,
+        workflow: DataIngestionWorkflow,
+    ) -> None:
+        self._prompt = prompt
+        self._workflow = workflow
+
+    def run(self) -> pd.DataFrame:
+        while True:
+            source_type, location = self._prompt.ask_for_source()
+
+            try:
+                dataframe, saved_path = self._workflow.ingest(
+                    source_type,
+                    location,
+                )
+            except Exception as error:
+                self._prompt.show_error(error)
+                continue
+
+            self._prompt.show_success(dataframe, saved_path)
+            return dataframe
 
 
 def choose_source() -> pd.DataFrame:
-    """Interaktywny wybór źródła w terminalu — zachowany jak wcześniej."""
-    while True:
-        print("\nWYBIERZ ŹRÓDŁO DANYCH")
-        print("1. CSV")
-        print("2. JSON")
-        print("3. API")
-
-        choice = input("Wpisz 1, 2 albo 3: ").strip()
-
-        if choice == "1":
-            source_type = "csv"
-            location = input("Podaj ścieżkę do pliku CSV: ").strip()
-        elif choice == "2":
-            source_type = "json"
-            location = input("Podaj ścieżkę do pliku JSON: ").strip()
-        elif choice == "3":
-            source_type = "api"
-            location = input("Wklej adres API: ").strip()
-        else:
-            print("Wybierz 1, 2 albo 3.")
-            continue
-
-        try:
-            clear_saved_data()
-            df = load_data(source_type, location)
-            saved_path = save_dataframe(df)
-
-            print("\nDANE WCZYTANE POPRAWNIE")
-            print(df.head(10))
-            print(f"\nDataFrame zapisany w: {saved_path}")
-
-            return df
-
-        except Exception as error:
-            print(f"\nBŁĄD: {error}")
+    """Zachowany punkt wejścia do interaktywnego wyboru w terminalu."""
+    controller = ConsoleIngestionController(
+        prompt=ConsoleSourcePrompt(),
+        workflow=_create_ingestion_workflow(),
+    )
+    return controller.run()
 
 
 if __name__ == "__main__":

@@ -1,104 +1,10 @@
-# import io
-# import os
-# from typing import Dict, List
-
-# import pandas as pd
-# from google.cloud import storage
-
-
-# DATAFRAME_OBJECT = "data/processed/df.pkl"
-# SELECTED_DATAFRAME_OBJECT = "data/processed/df_selected.pkl"
-# SELECTED_COLUMNS_OBJECT = "data/processed/selected_columns.txt"
-
-
-# def _get_bucket():
-#     bucket_name = os.environ.get("GCS_BUCKET_NAME")
-#     if not bucket_name:
-#         raise ValueError("Brak zmiennej środowiskowej GCS_BUCKET_NAME.")
-
-#     return storage.Client().bucket(bucket_name)
-
-
-# def _read_dataframe(object_name: str) -> pd.DataFrame:
-#     blob = _get_bucket().blob(object_name)
-
-#     if not blob.exists():
-#         raise FileNotFoundError(
-#             f"Nie znaleziono pliku: gs://{blob.bucket.name}/{object_name}"
-#         )
-
-#     return pd.read_pickle(io.BytesIO(blob.download_as_bytes()))
-
-
-# def get_saved_columns() -> List[str]:
-#     """Odczytuje df.pkl i zwraca jego nazwy kolumn."""
-#     df = _read_dataframe(DATAFRAME_OBJECT)
-#     return [str(column) for column in df.columns]
-
-
-# def select_dataframe_columns(selected_columns: List[str]) -> Dict:
-#     """Zapisuje wybrane nazwy kolumn oraz df_selected.pkl w GCS."""
-#     if not selected_columns:
-#         raise ValueError("Zaznacz przynajmniej jedną kolumnę.")
-
-#     if len(selected_columns) != len(set(selected_columns)):
-#         raise ValueError("Lista zaznaczonych kolumn zawiera powtórzenia.")
-
-#     df = _read_dataframe(DATAFRAME_OBJECT)
-#     original_columns = {str(column): column for column in df.columns}
-
-#     missing_columns = [
-#         column for column in selected_columns
-#         if column not in original_columns
-#     ]
-#     if missing_columns:
-#         raise ValueError(f"Nie znaleziono kolumn: {missing_columns}")
-
-#     selected_df = df[
-#         [original_columns[column] for column in selected_columns]
-#     ].copy()
-
-#     bucket = _get_bucket()
-
-#     dataframe_buffer = io.BytesIO()
-#     selected_df.to_pickle(dataframe_buffer)
-#     dataframe_buffer.seek(0)
-
-#     bucket.blob(SELECTED_DATAFRAME_OBJECT).upload_from_file(
-#         dataframe_buffer,
-#         content_type="application/octet-stream",
-#     )
-
-#     bucket.blob(SELECTED_COLUMNS_OBJECT).upload_from_string(
-#         "\n".join(selected_columns) + "\n",
-#         content_type="text/plain; charset=utf-8",
-#     )
-
-#     saved_df = _read_dataframe(SELECTED_DATAFRAME_OBJECT)
-
-#     print("\nPRÓBKA df_selected.pkl ODCZYTANA Z BUCKETA:")
-#     print(saved_df.head(10).to_string(index=False))
-
-#     return {
-#         "selected_dataframe_file": (
-#             f"gs://{bucket.name}/{SELECTED_DATAFRAME_OBJECT}"
-#         ),
-#         "selected_columns_file": (
-#             f"gs://{bucket.name}/{SELECTED_COLUMNS_OBJECT}"
-#         ),
-#         "rows": len(saved_df),
-#         "columns": [str(column) for column in saved_df.columns],
-#         "preview_html": saved_df.head(10).to_html(
-#             index=False,
-#             escape=True,
-#         ),
-#     }
 
 
 import io
 import os
 from abc import ABC, abstractmethod
-from typing import Dict, List
+from collections.abc import Hashable
+from typing import TypedDict
 
 import pandas as pd
 from google.cloud import storage
@@ -109,16 +15,26 @@ SELECTED_DATAFRAME_OBJECT = "data/processed/df_selected.pkl"
 SELECTED_COLUMNS_OBJECT = "data/processed/selected_columns.txt"
 
 
-# Adapter: wspólny interfejs dostępu do plików w Cloud Storage.
+def _get_bucket():
+    """Zwraca bucket skonfigurowany przez GCS_BUCKET_NAME."""
+    bucket_name = os.environ.get("GCS_BUCKET_NAME")
+    if not bucket_name:
+        raise ValueError("Brak zmiennej środowiskowej GCS_BUCKET_NAME.")
+
+    return storage.Client().bucket(bucket_name)
+
+
 class ObjectStorage(ABC):
+    """Kontrakt operacji na obiektach w magazynie plików."""
+
     @property
     @abstractmethod
     def bucket_name(self) -> str:
-        pass
+        ...
 
     @abstractmethod
     def read_bytes(self, object_name: str) -> bytes:
-        pass
+        ...
 
     @abstractmethod
     def upload_bytes(
@@ -127,16 +43,14 @@ class ObjectStorage(ABC):
         content: bytes,
         content_type: str,
     ) -> None:
-        pass
+        ...
 
 
 class GoogleCloudStorageAdapter(ObjectStorage):
-    def __init__(self):
-        bucket_name = os.environ.get("GCS_BUCKET_NAME")
-        if not bucket_name:
-            raise ValueError("Brak zmiennej środowiskowej GCS_BUCKET_NAME.")
+    """Udostępnia operacje Cloud Storage przez interfejs ObjectStorage."""
 
-        self._bucket = storage.Client().bucket(bucket_name)
+    def __init__(self) -> None:
+        self._bucket = _get_bucket()
 
     @property
     def bucket_name(self) -> str:
@@ -144,11 +58,9 @@ class GoogleCloudStorageAdapter(ObjectStorage):
 
     def read_bytes(self, object_name: str) -> bytes:
         blob = self._bucket.blob(object_name)
-
         if not blob.exists():
             raise FileNotFoundError(
-                f"Nie znaleziono pliku: "
-                f"gs://{self.bucket_name}/{object_name}"
+                f"Nie znaleziono pliku: gs://{self.bucket_name}/{object_name}"
             )
 
         return blob.download_as_bytes()
@@ -165,9 +77,39 @@ class GoogleCloudStorageAdapter(ObjectStorage):
         )
 
 
-# Repository: odpowiada za odczyt i zapis danych oraz listy wybranych kolumn.
-class SelectedColumnsRepository:
-    def __init__(self, storage_adapter: ObjectStorage):
+class ColumnSelectionRepositoryInterface(ABC):
+    """Operacje danych wymagane przez usługę wyboru kolumn."""
+
+    @property
+    @abstractmethod
+    def bucket_name(self) -> str:
+        ...
+
+    @abstractmethod
+    def read_dataframe(self, object_name: str) -> pd.DataFrame:
+        ...
+
+    @abstractmethod
+    def save_dataframe(
+        self,
+        dataframe: pd.DataFrame,
+        object_name: str,
+    ) -> None:
+        ...
+
+    @abstractmethod
+    def save_selected_columns(
+        self,
+        selected_columns: list[str],
+        object_name: str,
+    ) -> None:
+        ...
+
+
+class SelectedColumnsRepository(ColumnSelectionRepositoryInterface):
+    """Odczytuje i zapisuje DataFrame oraz wybrane kolumny."""
+
+    def __init__(self, storage_adapter: ObjectStorage) -> None:
         self._storage = storage_adapter
 
     @property
@@ -185,7 +127,6 @@ class SelectedColumnsRepository:
     ) -> None:
         buffer = io.BytesIO()
         dataframe.to_pickle(buffer)
-
         self._storage.upload_bytes(
             object_name,
             buffer.getvalue(),
@@ -194,11 +135,10 @@ class SelectedColumnsRepository:
 
     def save_selected_columns(
         self,
-        selected_columns: List[str],
+        selected_columns: list[str],
         object_name: str,
     ) -> None:
         content = ("\n".join(selected_columns) + "\n").encode("utf-8")
-
         self._storage.upload_bytes(
             object_name,
             content,
@@ -206,58 +146,106 @@ class SelectedColumnsRepository:
         )
 
 
+class ColumnSelectionResult(TypedDict):
+    selected_dataframe_file: str
+    selected_columns_file: str
+    rows: int
+    columns: list[str]
+    preview_html: str
+
+
 def _repository() -> SelectedColumnsRepository:
+    """Tworzy produkcyjne repozytorium i adapter Cloud Storage."""
     return SelectedColumnsRepository(GoogleCloudStorageAdapter())
 
 
-# Zachowane funkcje pomocnicze modułu.
-def _get_bucket():
-    bucket_name = os.environ.get("GCS_BUCKET_NAME")
-    if not bucket_name:
-        raise ValueError("Brak zmiennej środowiskowej GCS_BUCKET_NAME.")
-
-    return storage.Client().bucket(bucket_name)
-
-
 def _read_dataframe(object_name: str) -> pd.DataFrame:
+    """Zachowana funkcja pomocnicza do odczytu DataFrame'u."""
     return _repository().read_dataframe(object_name)
 
 
-class ColumnSelectionService:
-    """Odczytuje kolumny źródłowe i zapisuje wybrany DataFrame."""
+def _validate_selection(
+    selected_columns: list[str],
+    available_columns: dict[str, Hashable],
+) -> None:
+    """Sprawdza, czy wybór jest niepusty, bez powtórzeń i zawiera istniejące kolumny."""
+    if not selected_columns:
+        raise ValueError("Zaznacz przynajmniej jedną kolumnę.")
 
-    def __init__(self, repository: SelectedColumnsRepository):
+    if len(selected_columns) != len(set(selected_columns)):
+        raise ValueError("Lista zaznaczonych kolumn zawiera powtórzenia.")
+
+    missing_columns = [
+        column for column in selected_columns if column not in available_columns
+    ]
+    if missing_columns:
+        raise ValueError(f"Nie znaleziono kolumn: {missing_columns}")
+
+
+def _select_dataframe(
+    dataframe: pd.DataFrame,
+    selected_columns: list[str],
+    original_columns: dict[str, Hashable],
+) -> pd.DataFrame:
+    """Tworzy kopię DataFrame'u ograniczoną do wskazanych kolumn."""
+    source_column_names = [
+        original_columns[column] for column in selected_columns
+    ]
+    return dataframe[source_column_names].copy()
+
+
+def _print_saved_preview(dataframe: pd.DataFrame) -> None:
+    """Wypisuje próbkę zapisanego DataFrame'u w logu aplikacji."""
+    print("\nPRÓBKA df_selected.pkl ODCZYTANA Z BUCKETA:")
+    print(dataframe.head(10).to_string(index=False))
+
+
+def _build_result(
+    dataframe: pd.DataFrame,
+    bucket_name: str,
+) -> ColumnSelectionResult:
+    """Buduje wynik zwracany przez funkcję wyboru kolumn."""
+    return {
+        "selected_dataframe_file": (
+            f"gs://{bucket_name}/{SELECTED_DATAFRAME_OBJECT}"
+        ),
+        "selected_columns_file": (
+            f"gs://{bucket_name}/{SELECTED_COLUMNS_OBJECT}"
+        ),
+        "rows": len(dataframe),
+        "columns": [str(column) for column in dataframe.columns],
+        "preview_html": dataframe.head(10).to_html(
+            index=False,
+            escape=True,
+        ),
+    }
+
+
+class ColumnSelectionService:
+    """Obsługuje przypadek użycia: wybór i zapis kolumn DataFrame'u."""
+
+    def __init__(self, repository: ColumnSelectionRepositoryInterface) -> None:
         self._repository = repository
 
-    def get_saved_columns(self) -> List[str]:
+    def get_saved_columns(self) -> list[str]:
         dataframe = self._repository.read_dataframe(DATAFRAME_OBJECT)
         return [str(column) for column in dataframe.columns]
 
-    def select_columns(self, selected_columns: List[str]) -> Dict:
-        if not selected_columns:
-            raise ValueError("Zaznacz przynajmniej jedną kolumnę.")
-
-        if len(selected_columns) != len(set(selected_columns)):
-            raise ValueError("Lista zaznaczonych kolumn zawiera powtórzenia.")
-
-        dataframe = self._repository.read_dataframe(DATAFRAME_OBJECT)
+    def select_columns(
+        self,
+        selected_columns: list[str],
+    ) -> ColumnSelectionResult:
+        source_dataframe = self._repository.read_dataframe(DATAFRAME_OBJECT)
         original_columns = {
-            str(column): column
-            for column in dataframe.columns
+            str(column): column for column in source_dataframe.columns
         }
+        _validate_selection(selected_columns, original_columns)
 
-        missing_columns = [
-            column
-            for column in selected_columns
-            if column not in original_columns
-        ]
-        if missing_columns:
-            raise ValueError(f"Nie znaleziono kolumn: {missing_columns}")
-
-        selected_dataframe = dataframe[
-            [original_columns[column] for column in selected_columns]
-        ].copy()
-
+        selected_dataframe = _select_dataframe(
+            source_dataframe,
+            selected_columns,
+            original_columns,
+        )
         self._repository.save_dataframe(
             selected_dataframe,
             SELECTED_DATAFRAME_OBJECT,
@@ -270,37 +258,18 @@ class ColumnSelectionService:
         saved_dataframe = self._repository.read_dataframe(
             SELECTED_DATAFRAME_OBJECT
         )
+        _print_saved_preview(saved_dataframe)
 
-        print("\nPRÓBKA df_selected.pkl ODCZYTANA Z BUCKETA:")
-        print(saved_dataframe.head(10).to_string(index=False))
-
-        return {
-            "selected_dataframe_file": (
-                f"gs://{self._repository.bucket_name}/"
-                f"{SELECTED_DATAFRAME_OBJECT}"
-            ),
-            "selected_columns_file": (
-                f"gs://{self._repository.bucket_name}/"
-                f"{SELECTED_COLUMNS_OBJECT}"
-            ),
-            "rows": len(saved_dataframe),
-            "columns": [
-                str(column)
-                for column in saved_dataframe.columns
-            ],
-            "preview_html": saved_dataframe.head(10).to_html(
-                index=False,
-                escape=True,
-            ),
-        }
+        return _build_result(saved_dataframe, self._repository.bucket_name)
 
 
-# Zachowane funkcje wywoływane przez columns_ui.py.
-def get_saved_columns() -> List[str]:
+def get_saved_columns() -> list[str]:
+    """Punkt wejścia zachowany dla columns_ui.py."""
     return ColumnSelectionService(_repository()).get_saved_columns()
 
 
-def select_dataframe_columns(selected_columns: List[str]) -> Dict:
-    return ColumnSelectionService(_repository()).select_columns(
-        selected_columns
-    )
+def select_dataframe_columns(
+    selected_columns: list[str],
+) -> ColumnSelectionResult:
+    """Punkt wejścia zachowany dla formularza columns_ui.py."""
+    return ColumnSelectionService(_repository()).select_columns(selected_columns)

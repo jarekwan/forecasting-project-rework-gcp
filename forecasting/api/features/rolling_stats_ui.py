@@ -1,9 +1,13 @@
+
 from html import escape
 
 from fastapi import APIRouter, Form
 from fastapi.responses import HTMLResponse
 
-from forecasting.services.features.rolling.rolling_stats import get_rolling_source_preview, rolling_stats
+from forecasting.services.features.rolling.rolling_stats import (
+    get_rolling_source_preview,
+    rolling_stats,
+)
 
 
 router = APIRouter()
@@ -41,16 +45,21 @@ def _page(title: str, body: str) -> str:
     """
 
 
+def _build_column_options(columns: list[str]) -> str:
+    """Buduje elementy option dla kolumn zwróconych przez serwis."""
+    return "".join(
+        f'<option value="{escape(str(column), quote=True)}">'
+        f"{escape(str(column))}</option>"
+        for column in columns
+    )
+
+
 @router.get("/rolling-stats", response_class=HTMLResponse)
-def show_rolling_stats_form():
+def show_rolling_stats_form() -> str:
+    """Pobiera podgląd i wyświetla formularz statystyk kroczących."""
     try:
         data = get_rolling_source_preview()
-
-        options = "".join(
-            f'<option value="{escape(column, quote=True)}">'
-            f"{escape(column)}</option>"
-            for column in data["columns"]
-        )
+        options = _build_column_options(data["columns"])
 
         return _page(
             "Statystyki kroczące",
@@ -93,7 +102,8 @@ def submit_rolling_stats(
     column: str = Form(...),
     window: int = Form(...),
     aggregation: str = Form(...),
-):
+) -> str:
+    """Przekazuje ustawienia do serwisu i wyświetla wynik albo błąd."""
     try:
         result = rolling_stats(column, window, aggregation)
 

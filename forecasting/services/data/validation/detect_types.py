@@ -1,97 +1,3 @@
-# import io
-# import os
-
-# import pandas as pd
-# from pandas.api.types import (
-#     is_bool_dtype,
-#     is_datetime64_any_dtype,
-#     is_numeric_dtype,
-# )
-# from google.cloud import storage
-
-
-# INPUT_OBJECT = "data/processed/df_selected.pkl"
-# OUTPUT_OBJECT = "data/processed/column_types.csv"
-
-
-# def _get_bucket():
-#     bucket_name = os.environ.get("GCS_BUCKET_NAME")
-#     if not bucket_name:
-#         raise ValueError("Brak zmiennej środowiskowej GCS_BUCKET_NAME.")
-
-#     return storage.Client().bucket(bucket_name)
-
-
-# def _read_pickle(object_name: str) -> pd.DataFrame:
-#     bucket = _get_bucket()
-#     blob = bucket.blob(object_name)
-
-#     if not blob.exists():
-#         raise FileNotFoundError(
-#             f"Nie znaleziono pliku: gs://{bucket.name}/{object_name}"
-#         )
-
-#     return pd.read_pickle(io.BytesIO(blob.download_as_bytes()))
-
-
-# def _looks_like_datetime(series: pd.Series) -> bool:
-#     if is_datetime64_any_dtype(series):
-#         return True
-
-#     values = series.dropna()
-#     if values.empty:
-#         return False
-
-#     parsed = pd.to_datetime(values.astype(str), errors="coerce")
-#     return parsed.notna().mean() >= 0.8
-
-
-# def detect_types() -> dict[str, list[str]]:
-#     """Rozpoznaje typy kolumn w df_selected.pkl i zapisuje column_types.csv."""
-#     df = _read_pickle(INPUT_OBJECT)
-
-#     result = {
-#         "numerical": [],
-#         "categorical": [],
-#         "datetime": [],
-#     }
-
-#     rows = []
-
-#     for column in df.columns:
-#         column_name = str(column)
-#         series = df[column]
-
-#         if is_numeric_dtype(series) and not is_bool_dtype(series):
-#             column_type = "numerical"
-#         elif _looks_like_datetime(series):
-#             column_type = "datetime"
-#         else:
-#             column_type = "categorical"
-
-#         result[column_type].append(column_name)
-#         rows.append([column_name, column_type])
-
-#     output = io.StringIO()
-#     pd.DataFrame(rows, columns=["column", "type"]).to_csv(
-#         output,
-#         index=False,
-#     )
-
-#     bucket = _get_bucket()
-#     bucket.blob(OUTPUT_OBJECT).upload_from_string(
-#         output.getvalue(),
-#         content_type="text/csv",
-#     )
-
-#     print(
-#         f"Typy kolumn zapisane w: "
-#         f"gs://{bucket.name}/{OUTPUT_OBJECT}",
-#         flush=True,
-#     )
-#     print(result, flush=True)
-
-#     return result
 
 
 import io
@@ -100,6 +6,7 @@ from abc import ABC, abstractmethod
 
 import pandas as pd
 from google.cloud import storage
+from google.cloud.storage.bucket import Bucket
 from pandas.api.types import (
     is_bool_dtype,
     is_datetime64_any_dtype,
@@ -111,7 +18,8 @@ INPUT_OBJECT = "data/processed/df_selected.pkl"
 OUTPUT_OBJECT = "data/processed/column_types.csv"
 
 
-def _get_bucket():
+def _get_bucket() -> Bucket:
+    """Zwraca bucket wskazany przez zmienną GCS_BUCKET_NAME."""
     bucket_name = os.environ.get("GCS_BUCKET_NAME")
     if not bucket_name:
         raise RuntimeError("Brak zmiennej środowiskowej GCS_BUCKET_NAME.")
@@ -119,25 +27,21 @@ def _get_bucket():
     return storage.Client().bucket(bucket_name)
 
 
-# ---------------------------------------------------------------------
-# Interfejs i adapter Cloud Storage
-# ---------------------------------------------------------------------
-
 class ObjectStorage(ABC):
-    """Interfejs operacji GCS używanych przez ten moduł."""
+    """Kontrakt operacji Cloud Storage wykorzystywanych przez repozytorium."""
 
     @property
     @abstractmethod
     def bucket_name(self) -> str:
-        raise NotImplementedError
+        ...
 
     @abstractmethod
     def exists(self, object_name: str) -> bool:
-        raise NotImplementedError
+        ...
 
     @abstractmethod
     def read_bytes(self, object_name: str) -> bytes:
-        raise NotImplementedError
+        ...
 
     @abstractmethod
     def write_text(
@@ -146,13 +50,13 @@ class ObjectStorage(ABC):
         content: str,
         content_type: str,
     ) -> None:
-        raise NotImplementedError
+        ...
 
 
 class GoogleCloudStorageAdapter(ObjectStorage):
     """Udostępnia Cloud Storage przez interfejs ObjectStorage."""
 
-    def __init__(self, bucket):
+    def __init__(self, bucket: Bucket) -> None:
         self._bucket = bucket
 
     @property
@@ -177,31 +81,27 @@ class GoogleCloudStorageAdapter(ObjectStorage):
         )
 
 
-# ---------------------------------------------------------------------
-# Repozytorium DataFrame'u i raportu
-# ---------------------------------------------------------------------
-
 class ColumnTypeRepository(ABC):
-    """Interfejs odczytu danych i zapisu raportu typów."""
+    """Kontrakt odczytu DataFrame'u i zapisu raportu typów."""
 
     @property
     @abstractmethod
     def bucket_name(self) -> str:
-        raise NotImplementedError
+        ...
 
     @abstractmethod
     def read_dataframe(self, object_name: str) -> pd.DataFrame:
-        raise NotImplementedError
+        ...
 
     @abstractmethod
     def save_report(self, rows: list[list[str]]) -> str:
-        raise NotImplementedError
+        ...
 
 
 class GCSColumnTypeRepository(ColumnTypeRepository):
     """Odczytuje DataFrame i zapisuje raport typów w GCS."""
 
-    def __init__(self, object_storage: ObjectStorage):
+    def __init__(self, object_storage: ObjectStorage) -> None:
         self._object_storage = object_storage
 
     @property
@@ -219,9 +119,9 @@ class GCSColumnTypeRepository(ColumnTypeRepository):
         return pd.read_pickle(io.BytesIO(content))
 
     def save_report(self, rows: list[list[str]]) -> str:
-        report_df = pd.DataFrame(rows, columns=["column", "type"])
+        report_dataframe = pd.DataFrame(rows, columns=["column", "type"])
         output = io.StringIO()
-        report_df.to_csv(output, index=False)
+        report_dataframe.to_csv(output, index=False)
 
         self._object_storage.write_text(
             OUTPUT_OBJECT,
@@ -232,19 +132,17 @@ class GCSColumnTypeRepository(ColumnTypeRepository):
         return f"gs://{self.bucket_name}/{OUTPUT_OBJECT}"
 
 
-# ---------------------------------------------------------------------
-# Reguły rozpoznawania typów — wzorzec Strategy
-# ---------------------------------------------------------------------
-
 class ColumnTypeRule(ABC):
-    """Interfejs pojedynczej reguły rozpoznawania typu kolumny."""
+    """Kontrakt pojedynczej reguły rozpoznawania typu kolumny."""
 
     @abstractmethod
     def detect(self, series: pd.Series) -> str | None:
-        raise NotImplementedError
+        ...
 
 
 class NumericalColumnRule(ColumnTypeRule):
+    """Rozpoznaje kolumny liczbowe, ale nie logiczne."""
+
     def detect(self, series: pd.Series) -> str | None:
         if is_numeric_dtype(series) and not is_bool_dtype(series):
             return "numerical"
@@ -252,6 +150,8 @@ class NumericalColumnRule(ColumnTypeRule):
 
 
 class DatetimeColumnRule(ColumnTypeRule):
+    """Rozpoznaje kolumny zawierające wartości daty i czasu."""
+
     def detect(self, series: pd.Series) -> str | None:
         if _looks_like_datetime(series):
             return "datetime"
@@ -259,9 +159,9 @@ class DatetimeColumnRule(ColumnTypeRule):
 
 
 class ColumnTypeClassifier:
-    """Sprawdza reguły po kolei; nierozpoznaną kolumnę uznaje za kategorię."""
+    """Stosuje reguły po kolei; nierozpoznaną kolumnę klasyfikuje jako kategorię."""
 
-    def __init__(self, rules: list[ColumnTypeRule]):
+    def __init__(self, rules: list[ColumnTypeRule]) -> None:
         self._rules = rules
 
     def classify(self, series: pd.Series) -> str:
@@ -273,84 +173,82 @@ class ColumnTypeClassifier:
         return "categorical"
 
 
-# ---------------------------------------------------------------------
-# Usługa rozpoznawania typów
-# ---------------------------------------------------------------------
+def _classify_dataframe(
+    dataframe: pd.DataFrame,
+    classifier: ColumnTypeClassifier,
+) -> tuple[dict[str, list[str]], list[list[str]]]:
+    """Klasyfikuje kolumny i przygotowuje wiersze raportu."""
+    result: dict[str, list[str]] = {
+        "numerical": [],
+        "categorical": [],
+        "datetime": [],
+    }
+    report_rows: list[list[str]] = []
+
+    for column in dataframe.columns:
+        column_name = str(column)
+        column_type = classifier.classify(dataframe[column])
+        result[column_type].append(column_name)
+        report_rows.append([column_name, column_type])
+
+    return result, report_rows
+
+
+def _print_detection_summary(
+    report_path: str,
+    result: dict[str, list[str]],
+) -> None:
+    """Wypisuje lokalizację raportu i wynik klasyfikacji do logu."""
+    print(f"Typy kolumn zapisane w: {report_path}", flush=True)
+    print(result, flush=True)
+
 
 class ColumnTypeDetectionService:
-    """Koordynuje klasyfikację kolumn i zapis raportu."""
+    """Koordynuje rozpoznanie typów kolumn i zapis raportu."""
 
     def __init__(
         self,
         repository: ColumnTypeRepository,
         classifier: ColumnTypeClassifier,
-    ):
+    ) -> None:
         self._repository = repository
         self._classifier = classifier
 
     def detect_types(self) -> dict[str, list[str]]:
-        df = self._repository.read_dataframe(INPUT_OBJECT)
-
-        result = {
-            "numerical": [],
-            "categorical": [],
-            "datetime": [],
-        }
-        rows = []
-
-        for column in df.columns:
-            column_name = str(column)
-            column_type = self._classifier.classify(df[column])
-
-            result[column_type].append(column_name)
-            rows.append([column_name, column_type])
-
-        report_path = self._repository.save_report(rows)
-
-        print(
-            f"Typy kolumn zapisane w: {report_path}",
-            flush=True,
-        )
-        print(result, flush=True)
-
+        dataframe = self._repository.read_dataframe(INPUT_OBJECT)
+        result, report_rows = _classify_dataframe(dataframe, self._classifier)
+        report_path = self._repository.save_report(report_rows)
+        _print_detection_summary(report_path, result)
         return result
 
 
-def _create_service() -> ColumnTypeDetectionService:
-    bucket = _get_bucket()
-    object_storage = GoogleCloudStorageAdapter(bucket)
-    repository = GCSColumnTypeRepository(object_storage)
+def _create_repository() -> GCSColumnTypeRepository:
+    """Składa adapter GCS i repozytorium używane w produkcji."""
+    object_storage = GoogleCloudStorageAdapter(_get_bucket())
+    return GCSColumnTypeRepository(object_storage)
 
+
+def _create_service() -> ColumnTypeDetectionService:
+    """Tworzy usługę z produkcyjnym repozytorium i regułami klasyfikacji."""
     classifier = ColumnTypeClassifier(
         rules=[
             NumericalColumnRule(),
             DatetimeColumnRule(),
         ]
     )
-
     return ColumnTypeDetectionService(
-        repository=repository,
+        repository=_create_repository(),
         classifier=classifier,
     )
 
 
-# ---------------------------------------------------------------------
-# Zachowane funkcje pomocnicze i publiczna funkcja używana przez UI.
-# ---------------------------------------------------------------------
-
 def _read_pickle(object_name: str) -> pd.DataFrame:
-    bucket = _get_bucket()
-    blob = bucket.blob(object_name)
-
-    if not blob.exists():
-        raise FileNotFoundError(
-            f"Nie znaleziono pliku: gs://{bucket.name}/{object_name}"
-        )
-
-    return pd.read_pickle(io.BytesIO(blob.download_as_bytes()))
+    """Zachowana funkcja pomocnicza do odczytu DataFrame'u z GCS."""
+    return _create_repository().read_dataframe(object_name)
 
 
 def _looks_like_datetime(series: pd.Series) -> bool:
+    """Sprawdza, czy kolumna ma typ daty lub zawiera głównie parsowalne daty."""
     if is_datetime64_any_dtype(series):
         return True
 
@@ -363,5 +261,5 @@ def _looks_like_datetime(series: pd.Series) -> bool:
 
 
 def detect_types() -> dict[str, list[str]]:
-    """Rozpoznaje typy kolumn i zapisuje column_types.csv w GCS."""
+    """Punkt wejścia używany przez UI; zwraca typy i zapisuje raport CSV."""
     return _create_service().detect_types()

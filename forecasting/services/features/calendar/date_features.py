@@ -1,90 +1,9 @@
-# import io
-# import os
-
-# import pandas as pd
-# from google.cloud import storage
-
-
-# INPUT_OBJECT = "data/processed/df_clean.pkl"
-# OUTPUT_OBJECT = "data/processed/df_date_features.pkl"
-
-
-# def _get_bucket():
-#     bucket_name = os.environ.get("GCS_BUCKET_NAME")
-#     if not bucket_name:
-#         raise RuntimeError("Brak zmiennej środowiskowej GCS_BUCKET_NAME.")
-
-#     return storage.Client().bucket(bucket_name)
-
-
-# def _read_dataframe(object_name: str) -> pd.DataFrame:
-#     bucket = _get_bucket()
-#     blob = bucket.blob(object_name)
-
-#     if not blob.exists():
-#         raise FileNotFoundError(
-#             f"Nie znaleziono pliku gs://{bucket.name}/{object_name}"
-#         )
-
-#     return pd.read_pickle(io.BytesIO(blob.download_as_bytes()))
-
-
-# def _save_dataframe(df: pd.DataFrame, object_name: str) -> str:
-#     bucket = _get_bucket()
-#     buffer = io.BytesIO()
-#     df.to_pickle(buffer)
-#     buffer.seek(0)
-
-#     bucket.blob(object_name).upload_from_file(
-#         buffer,
-#         content_type="application/octet-stream",
-#     )
-
-#     return f"gs://{bucket.name}/{object_name}"
-
-
-# def date_features() -> dict:
-#     """Tworzy cechy daty automatycznie z DatetimeIndex i zapisuje DataFrame."""
-#     df = _read_dataframe(INPUT_OBJECT)
-
-#     if not isinstance(df.index, pd.DatetimeIndex):
-#         raise ValueError(
-#             "Data w df_clean.pkl nie jest indeksem DatetimeIndex. "
-#             "Sprawdź, czy set_date.py zachował datę jako indeks."
-#         )
-
-#     if df.empty:
-#         raise ValueError("df_clean.pkl nie zawiera danych.")
-
-#     df = df.sort_index().copy()
-
-#     # Data jest indeksem. Nie dodajemy jej jako kolumny do cech modelu.
-#     df["year"] = df.index.year
-#     df["month"] = df.index.month
-#     df["day"] = df.index.day
-#     df["dayofweek"] = df.index.dayofweek
-
-#     output_path = _save_dataframe(df, OUTPUT_OBJECT)
-#     saved_df = _read_dataframe(OUTPUT_OBJECT)
-
-#     print("\nPRÓBKA df_date_features.pkl ODCZYTANA Z BUCKETA:")
-#     print(saved_df.head(10).to_string(index=True), flush=True)
-
-#     return {
-#         "dataframe_file": output_path,
-#         "rows": len(saved_df),
-#         "columns": [str(column) for column in saved_df.columns],
-#         "preview_html": saved_df.head(10).to_html(
-#             index=True,
-#             escape=True,
-#         ),
-#     }
-
 
 
 import io
 import os
 from abc import ABC, abstractmethod
+from typing import Any
 
 import pandas as pd
 from google.cloud import storage
@@ -94,20 +13,8 @@ INPUT_OBJECT = "data/processed/df_clean.pkl"
 OUTPUT_OBJECT = "data/processed/df_date_features.pkl"
 
 
-def _get_bucket():
-    bucket_name = os.environ.get("GCS_BUCKET_NAME")
-    if not bucket_name:
-        raise RuntimeError("Brak zmiennej środowiskowej GCS_BUCKET_NAME.")
-
-    return storage.Client().bucket(bucket_name)
-
-
-# ---------------------------------------------------------------------
-# Interfejs i adapter Cloud Storage
-# ---------------------------------------------------------------------
-
 class ObjectStorage(ABC):
-    """Interfejs operacji na plikach potrzebnych temu modułowi."""
+    """Kontrakt operacji Cloud Storage używanych do obsługi DataFrame'ów."""
 
     @property
     @abstractmethod
@@ -133,9 +40,9 @@ class ObjectStorage(ABC):
 
 
 class GoogleCloudStorageAdapter(ObjectStorage):
-    """Ukrywa szczegóły klienta Google Cloud Storage."""
+    """Dostosowuje bucket GCS do interfejsu ObjectStorage."""
 
-    def __init__(self, bucket):
+    def __init__(self, bucket: storage.Bucket) -> None:
         self._bucket = bucket
 
     @property
@@ -161,12 +68,8 @@ class GoogleCloudStorageAdapter(ObjectStorage):
         )
 
 
-# ---------------------------------------------------------------------
-# Repozytorium DataFrame'ów
-# ---------------------------------------------------------------------
-
 class DateFeaturesRepository(ABC):
-    """Interfejs dostępu do danych etapu tworzenia cech daty."""
+    """Kontrakt odczytu i zapisu DataFrame'ów etapu cech kalendarzowych."""
 
     @property
     @abstractmethod
@@ -180,16 +83,16 @@ class DateFeaturesRepository(ABC):
     @abstractmethod
     def save_dataframe(
         self,
-        df: pd.DataFrame,
+        dataframe: pd.DataFrame,
         object_name: str,
     ) -> str:
         raise NotImplementedError
 
 
 class GCSDateFeaturesRepository(DateFeaturesRepository):
-    """Odczytuje i zapisuje DataFrame'y w GCS."""
+    """Odczytuje i zapisuje DataFrame'y przez adapter Cloud Storage."""
 
-    def __init__(self, object_storage: ObjectStorage):
+    def __init__(self, object_storage: ObjectStorage) -> None:
         self._object_storage = object_storage
 
     @property
@@ -208,11 +111,11 @@ class GCSDateFeaturesRepository(DateFeaturesRepository):
 
     def save_dataframe(
         self,
-        df: pd.DataFrame,
+        dataframe: pd.DataFrame,
         object_name: str,
     ) -> str:
         buffer = io.BytesIO()
-        df.to_pickle(buffer)
+        dataframe.to_pickle(buffer)
 
         self._object_storage.write_bytes(
             object_name,
@@ -223,92 +126,117 @@ class GCSDateFeaturesRepository(DateFeaturesRepository):
         return f"gs://{self.bucket_name}/{object_name}"
 
 
-# ---------------------------------------------------------------------
-# Logika tworzenia cech daty
-# ---------------------------------------------------------------------
+def _validate_input_dataframe(dataframe: pd.DataFrame) -> None:
+    """Sprawdza warunki wejściowe wymagane do tworzenia cech daty."""
+    if not isinstance(dataframe.index, pd.DatetimeIndex):
+        raise ValueError(
+            "Data w df_clean.pkl nie jest indeksem DatetimeIndex. "
+            "Sprawdź, czy set_date.py zachował datę jako indeks."
+        )
+
+    if dataframe.empty:
+        raise ValueError("df_clean.pkl nie zawiera danych.")
+
+
+def _add_calendar_features(dataframe: pd.DataFrame) -> pd.DataFrame:
+    """Dodaje rok, miesiąc, dzień miesiąca i dzień tygodnia."""
+    result = dataframe.copy()
+    result["year"] = result.index.year
+    result["month"] = result.index.month
+    result["day"] = result.index.day
+    result["dayofweek"] = result.index.dayofweek
+    return result
+
 
 class DateFeatureGenerator:
     """Tworzy cechy kalendarzowe z indeksu DatetimeIndex."""
 
-    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        if not isinstance(df.index, pd.DatetimeIndex):
-            raise ValueError(
-                "Data w df_clean.pkl nie jest indeksem DatetimeIndex. "
-                "Sprawdź, czy set_date.py zachował datę jako indeks."
-            )
+    def transform(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        _validate_input_dataframe(dataframe)
+        sorted_dataframe = dataframe.sort_index()
+        return _add_calendar_features(sorted_dataframe)
 
-        if df.empty:
-            raise ValueError("df_clean.pkl nie zawiera danych.")
 
-        result = df.sort_index().copy()
+def _build_date_features_result(
+    dataframe: pd.DataFrame,
+    output_path: str,
+) -> dict[str, Any]:
+    """Przygotowuje wynik używany przez date_features_ui.py."""
+    return {
+        "dataframe_file": output_path,
+        "rows": len(dataframe),
+        "columns": [str(column) for column in dataframe.columns],
+        "preview_html": dataframe.head(10).to_html(
+            index=True,
+            escape=True,
+        ),
+    }
 
-        # Data pozostaje indeksem i nie staje się kolumną cech.
-        result["year"] = result.index.year
-        result["month"] = result.index.month
-        result["day"] = result.index.day
-        result["dayofweek"] = result.index.dayofweek
 
-        return result
+def _print_saved_preview(dataframe: pd.DataFrame) -> None:
+    """Wypisuje próbkę zapisanego DataFrame'u do logu."""
+    print("\nPRÓBKA df_date_features.pkl ODCZYTANA Z BUCKETA:")
+    print(dataframe.head(10).to_string(index=True), flush=True)
 
 
 class DateFeaturesService:
-    """Koordynuje odczyt, tworzenie cech i zapis wyniku."""
+    """Koordynuje tworzenie, zapis i zwrócenie cech daty."""
 
     def __init__(
         self,
         repository: DateFeaturesRepository,
         generator: DateFeatureGenerator,
-    ):
+    ) -> None:
         self._repository = repository
         self._generator = generator
 
-    def run(self) -> dict:
-        df = self._repository.read_dataframe(INPUT_OBJECT)
-        result_df = self._generator.transform(df)
+    def run(self) -> dict[str, Any]:
+        """Koordynuje etapy przygotowania DataFrame'u z cechami daty."""
+        dataframe = self._repository.read_dataframe(INPUT_OBJECT)
+        transformed_dataframe = self._generator.transform(dataframe)
 
         output_path = self._repository.save_dataframe(
-            result_df,
+            transformed_dataframe,
             OUTPUT_OBJECT,
         )
-        saved_df = self._repository.read_dataframe(OUTPUT_OBJECT)
+        saved_dataframe = self._repository.read_dataframe(OUTPUT_OBJECT)
 
-        print("\nPRÓBKA df_date_features.pkl ODCZYTANA Z BUCKETA:")
-        print(saved_df.head(10).to_string(index=True), flush=True)
+        _print_saved_preview(saved_dataframe)
+        return _build_date_features_result(saved_dataframe, output_path)
 
-        return {
-            "dataframe_file": output_path,
-            "rows": len(saved_df),
-            "columns": [str(column) for column in saved_df.columns],
-            "preview_html": saved_df.head(10).to_html(
-                index=True,
-                escape=True,
-            ),
-        }
+
+def _get_bucket() -> storage.Bucket:
+    """Zwraca bucket GCS wskazany przez GCS_BUCKET_NAME."""
+    bucket_name = os.environ.get("GCS_BUCKET_NAME")
+    if not bucket_name:
+        raise RuntimeError("Brak zmiennej środowiskowej GCS_BUCKET_NAME.")
+
+    return storage.Client().bucket(bucket_name)
 
 
 def _create_repository() -> GCSDateFeaturesRepository:
+    """Tworzy repozytorium GCS używane przez ten moduł."""
     object_storage = GoogleCloudStorageAdapter(_get_bucket())
     return GCSDateFeaturesRepository(object_storage)
 
 
 def _create_service() -> DateFeaturesService:
+    """Składa usługę z repozytorium i generatora cech daty."""
     return DateFeaturesService(
         repository=_create_repository(),
         generator=DateFeatureGenerator(),
     )
 
 
-# ---------------------------------------------------------------------
-# Zachowane funkcje pomocnicze i publiczna funkcja używana przez UI.
-# ---------------------------------------------------------------------
-
+# Zachowane funkcje pomocnicze używane w tym module lub przez inne moduły.
 def _read_dataframe(object_name: str) -> pd.DataFrame:
     return _create_repository().read_dataframe(object_name)
 
 
-def _save_dataframe(df: pd.DataFrame, object_name: str) -> str:
-    return _create_repository().save_dataframe(df, object_name)
+def _save_dataframe(dataframe: pd.DataFrame, object_name: str) -> str:
+    return _create_repository().save_dataframe(dataframe, object_name)
 
 
-def date_features() -> dict:
+def date_features() -> dict[str, Any]:
+    """Publiczna funkcja uruchamiająca tworzenie cech dla date_features_ui."""
     return _create_service().run()

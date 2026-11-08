@@ -1,3 +1,5 @@
+
+
 import json
 from html import escape
 
@@ -366,7 +368,7 @@ def _form(error: str = "") -> HTMLResponse:
                 const method = methodSelect.value;
                 const parameters = {{}};
 
-                document.querySelectorAll(".parameter").forEach((section) => {{
+                for (const section of document.querySelectorAll(".parameter")) {{
                     const name = section.dataset.name;
                     const type = section.dataset.type;
 
@@ -386,7 +388,7 @@ def _form(error: str = "") -> HTMLResponse:
                                 parameters[name] = checked;
                             }}
                         }}
-                        return;
+                        continue;
                     }}
 
                     if (method === "manual") {{
@@ -429,7 +431,7 @@ def _form(error: str = "") -> HTMLResponse:
                             parameters[name] = [minValue, maxValue];
                         }}
                     }}
-                }});
+                }}
 
                 document.getElementById("parameters_payload").value =
                     JSON.stringify(parameters);
@@ -455,7 +457,8 @@ def _form(error: str = "") -> HTMLResponse:
 
 
 @router.get("/train-model", response_class=HTMLResponse)
-def show_train_model_form():
+def show_train_model_form() -> HTMLResponse:
+    """Wyświetla formularz wyboru modelu i strojenia."""
     return _form()
 
 
@@ -465,7 +468,8 @@ def submit_train_model(
     tuning_method: str = Form(...),
     parameters: str = Form("{}"),
     n_trials: int = Form(20),
-):
+) -> HTMLResponse:
+    """Przyjmuje formularz, uruchamia trening i wyświetla wynik."""
     try:
         parsed_parameters = json.loads(parameters or "{}")
 
